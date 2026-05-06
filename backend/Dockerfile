@@ -12,5 +12,5 @@ COPY src ./src
 ENV DATA_DIR=/app/data
 ENV PORT=4000
 EXPOSE 4000
-
+USER root
 CMD ["node", "src/index.js"]
