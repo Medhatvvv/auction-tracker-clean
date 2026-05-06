@@ -1,0 +1,28 @@
+{
+  "name": "auction-tracker-backend",
+  "version": "1.0.0",
+  "description": "Backend for e-leiloes.pt auction tracker",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "express": "^4.21.0",
+    "node-cron": "^3.0.3",
+    "playwright": "^1.48.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
