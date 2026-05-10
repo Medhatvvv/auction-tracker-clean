@@ -25,7 +25,7 @@ export async function shutdownBrowser() {
     await b.close();
     browserPromise = null;
   }
-}
+} 
 
 // ---------------------------------------------------------------------------
 // Helpers
