@@ -76,10 +76,7 @@ const LABEL_ALIASES = {
   opening_value: ['Opening Value', 'Valor de Abertura'],
   minimum_value: ['Minimum Value', 'Valor Mínimo'],
   current_bid:   ['Current Bid', 'Licitação Atual', 'Valor Atual', 'Melhor Licitação'],
-  end_phrase:    [
-    'auction ended in', 'auction ends in', 'auction will end in',
-    'leilão terminou em', 'termina em', 'leilão termina em',
-  ],
+  end_label:     ['End', 'Fim', 'Termina'],
 };
 
 // ---------------------------------------------------------------------------
