@@ -115,7 +115,15 @@ export async function scrapeAuction(url, opts = {}) {
 
     // Some bid values on this site are loaded via XHR after first paint.
     // Wait for the network to settle, but don't block forever.
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+   // The site loads bid info via XHR after first paint, and keeps
+    // a "Page Update" timer running forever — so networkidle never fires.
+    // Instead, wait until both a "Current Bid" label and a DD/MM/YYYY date
+    // appear in the rendered page text.
+    await page.waitForFunction(() => {
+      const t = document.body.innerText || '';
+      return /Current Bid|Licita.+o Atual/.test(t) &&
+             /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/.test(t);
+    }, { timeout: 20_000 }).catch(() => {});
 
     const data = await page.evaluate((aliases) => {
       const text = document.body.innerText || '';
@@ -150,7 +158,7 @@ export async function scrapeAuction(url, opts = {}) {
         opening_value_raw: pickLabel(aliases.opening_value),
         minimum_value_raw: pickLabel(aliases.minimum_value),
         current_bid_raw:   pickLabel(aliases.current_bid),
-        end_raw:           pickEndPhrase(aliases.end_phrase),
+        end_raw:           pickLabel(aliases.end_label),
         url: location.href,
       };
     }, LABEL_ALIASES);
