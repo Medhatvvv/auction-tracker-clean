@@ -1,7 +1,7 @@
 # Use Microsoft's Playwright image — it bundles Chromium + every system lib.
 FROM mcr.microsoft.com/playwright:v1.59.1-jammy
 WORKDIR /app
- 
+
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
