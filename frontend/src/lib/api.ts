@@ -18,7 +18,7 @@ export type BidPoint = { current_bid: number | null; captured_at: string };
 
 export type AuctionDetail = Auction & { history: BidPoint[] };
 
-const API = '/api';
+const API = 'https://backend-production-fe31.up.railway.app/api';
 
 export async function listAuctions(): Promise<Auction[]> {
   const res = await fetch(`${API}/auctions`, { cache: 'no-store' });
@@ -57,10 +57,7 @@ export function snapshotUrl(id: number, asset: 'page.html' | 'page.png' | 'page.
 // Connect to the backend WS. Falls back gracefully if unavailable.
 export function openWS(onMessage: (msg: any) => void): () => void {
   if (typeof window === 'undefined') return () => {};
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL || `${proto}://${location.host}`)
-    .replace(/^http/, 'ws');
-  const ws = new WebSocket(`${apiBase}/ws`);
+  const ws = new WebSocket('wss://backend-production-fe31.up.railway.app/ws');
   ws.onmessage = (ev) => {
     try { onMessage(JSON.parse(ev.data)); } catch {}
   };
