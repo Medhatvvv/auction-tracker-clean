@@ -25,52 +25,33 @@ export async function shutdownBrowser() {
     await b.close();
     browserPromise = null;
   }
-} 
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Parse a Portuguese-formatted currency string into a number.
- *   "201 000,00 €"   -> 201000
- *   "1.234.567,89 €" -> 1234567.89
- */
 export function parseEuroAmount(text) {
   if (!text) return null;
   const cleaned = text
     .replace(/€/g, '')
-    .replace(/\u00A0/g, ' ') // non-breaking spaces
+    .replace(/\u00A0/g, ' ')
     .replace(/\s/g, '')
-    .replace(/\./g, '')      // thousand separator
-    .replace(/,/g, '.')      // decimal comma -> dot
+    .replace(/\./g, '')
+    .replace(/,/g, '.')
     .trim();
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * Parse strings like:
- *   "This online auction ended in 06/05/2026 10:23:57."
- *   "Termina em 06/05/2026 10:23:57"
- * Returns an ISO UTC date or null.
- */
 export function parsePortugueseDateTime(text) {
   if (!text) return null;
   const m = text.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
   if (!m) return null;
   const [, dd, mm, yyyy, HH, MM, SS] = m;
-  // Site shows times in Europe/Lisbon. Convert to UTC.
-  const localStr = `${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}`;
-  const utc = fromZonedTime(localStr, 'Europe/Lisbon');
+  const utc = fromZonedTime(`${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}`, 'Europe/Lisbon');
   return utc.toISOString();
 }
 
-/**
- * The auction page renders labels in either Portuguese or English depending
- * on the visitor's locale. This helper fishes a value out of the page DOM by
- * searching for any of the label aliases.
- */
 const LABEL_ALIASES = {
   base_value:    ['Base Value', 'Valor Base', 'Valor de Avaliação'],
   opening_value: ['Opening Value', 'Valor de Abertura'],
@@ -80,15 +61,48 @@ const LABEL_ALIASES = {
 };
 
 // ---------------------------------------------------------------------------
+// Click through the image gallery and collect every image URL.
+// Returns an array of absolute URLs. Capped at 60 images for safety.
+// ---------------------------------------------------------------------------
+async function captureGalleryImages(page) {
+  // Read the "X/Y" indicator in the gallery footer to know how many to walk.
+  const total = await page.evaluate(() => {
+    const text = document.querySelector('.title-container')?.innerText || '';
+    const m = text.match(/\d+\s*\/\s*(\d+)/);
+    return m ? parseInt(m[1], 10) : 1;
+  }).catch(() => 1);
+
+  const limit = Math.min(total, 60);
+  const urls  = new Set();
+
+  for (let i = 0; i < limit; i++) {
+    const url = await page.evaluate(() => {
+      const item = document.querySelector('.p-galleria-item');
+      if (!item) return null;
+      // Image is set as a background-image style on the inner div
+      const inner = item.querySelector('[style*="background-image"]') || item;
+      const bg = (inner.style?.backgroundImage) || '';
+      const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+      return m ? m[1] : null;
+    }).catch(() => null);
+
+    if (url) urls.add(url);
+
+    if (i < limit - 1) {
+      // Click "next" arrow. If it isn't there, stop early.
+      const ok = await page.click('.p-galleria-item-next', { timeout: 800 })
+        .then(() => true).catch(() => false);
+      if (!ok) break;
+      await page.waitForTimeout(250); // give the carousel time to swap
+    }
+  }
+
+  return Array.from(urls);
+}
+
+// ---------------------------------------------------------------------------
 // Main scrape
 // ---------------------------------------------------------------------------
-
-/**
- * Fetch the auction page once and return parsed fields.
- *
- * @param {string} url
- * @param {{ saveSnapshot?: boolean, snapshotId?: number|string }} opts
- */
 export async function scrapeAuction(url, opts = {}) {
   const browser = await getBrowser();
   const ctx = await browser.newContext({
@@ -100,39 +114,45 @@ export async function scrapeAuction(url, opts = {}) {
   });
 
   const page = await ctx.newPage();
-
-  // Random small delay to look less robotic
   await page.waitForTimeout(Math.floor(Math.random() * 1500));
 
   try {
-    const resp = await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: 45_000,
-    });
+    const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     if (!resp || !resp.ok()) {
       throw new Error(`HTTP ${resp ? resp.status() : 'no-response'} for ${url}`);
     }
 
-    // Some bid values on this site are loaded via XHR after first paint.
-    // Wait for the network to settle, but don't block forever.
-   // The site loads bid info via XHR after first paint, and keeps
-    // a "Page Update" timer running forever — so networkidle never fires.
-    // Instead, wait until both a "Current Bid" label and a DD/MM/YYYY date
-    // appear in the rendered page text.
+    // ── Wait for actual VALUES (not just labels) to be rendered ─────────
+    // The page renders the labels statically but loads bid info via XHR.
+    // Last time we waited only for the label, which appeared too early.
+    // This waits for the label AND a euro amount AND an end date.
     await page.waitForFunction(() => {
       const t = document.body.innerText || '';
-      return /Current Bid|Licita.+o Atual/.test(t) &&
-             /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/.test(t);
+      const hasBid =
+        /Current Bid\s*:?\s*[\d.,\s]+€/i.test(t) ||
+        /Licita\S+\s+Atual\s*:?\s*[\d.,\s]+€/i.test(t);
+      const hasEnd =
+        /End\s*:?\s*\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/i.test(t) ||
+        /Fim\s*:?\s*\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/i.test(t);
+      return hasBid && hasEnd;
     }, { timeout: 20_000 }).catch(() => {});
 
+    // ── Remove any popup overlay that's blocking the page ──────────────
+    // The site shows a "FORMAÇÃO E-LEILÕES" modal on some visits.
+    // We yank it out of the DOM so it doesn't ruin the screenshot.
+    await page.evaluate(() => {
+      document.querySelectorAll(
+        '.p-dialog-mask, .p-component-overlay, .p-dialog'
+      ).forEach(el => el.remove());
+      // Restore page scroll in case the modal locked it
+      document.body.style.overflow = '';
+    }).catch(() => {});
+
+    // ── Extract the structured data ─────────────────────────────────────
     const data = await page.evaluate((aliases) => {
       const text = document.body.innerText || '';
-
-      // Extract one labelled value, e.g. "Base Value: 201 000,00 €"
       function pickLabel(labels) {
         for (const label of labels) {
-          // Match "Label: value" up to the next newline, allowing optional
-          // whitespace and various dash characters.
           const re = new RegExp(
             `${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:\\-]\\s*([^\\n\\r]+)`,
             'i',
@@ -142,18 +162,8 @@ export async function scrapeAuction(url, opts = {}) {
         }
         return null;
       }
-
-      function pickEndPhrase(labels) {
-        for (const label of labels) {
-          const re = new RegExp(`${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\n\\r.]+)`, 'i');
-          const m = text.match(re);
-          if (m) return m[0];
-        }
-        return null;
-      }
-
       return {
-        title:           document.title || null,
+        title:             document.title || null,
         base_value_raw:    pickLabel(aliases.base_value),
         opening_value_raw: pickLabel(aliases.opening_value),
         minimum_value_raw: pickLabel(aliases.minimum_value),
@@ -171,33 +181,30 @@ export async function scrapeAuction(url, opts = {}) {
       current_bid:   parseEuroAmount(data.current_bid_raw),
       end_at:        parsePortugueseDateTime(data.end_raw),
       raw:           data,
+      image_urls:    [],
     };
 
-    // Optional: save full page snapshot (HTML + screenshot + PDF)
+    // ── Snapshot capture + gallery walk (only on initial add) ──────────
     if (opts.saveSnapshot && opts.snapshotId != null) {
-      const id = String(opts.snapshotId);
+      // Capture gallery first so the screenshot reflects whatever image
+      // happens to be last. (Doesn't matter visually; just an artifact.)
+      try {
+        parsed.image_urls = await captureGalleryImages(page);
+      } catch (e) {
+        console.warn('[scraper] gallery capture failed:', e.message);
+      }
+
+      const id  = String(opts.snapshotId);
       const dir = path.join(SNAPSHOT_DIR, id);
       await fs.mkdir(dir, { recursive: true });
 
       const html = await page.content();
       await fs.writeFile(path.join(dir, 'page.html'), html, 'utf8');
+      await page.screenshot({ path: path.join(dir, 'page.png'), fullPage: true });
 
-      await page.screenshot({
-        path: path.join(dir, 'page.png'),
-        fullPage: true,
-      });
-
-      // PDFs only work in headless Chromium
       try {
-        await page.pdf({
-          path: path.join(dir, 'page.pdf'),
-          format: 'A4',
-          printBackground: true,
-        });
-      } catch (e) {
-        // Non-fatal — PNG + HTML are enough
-      }
-
+        await page.pdf({ path: path.join(dir, 'page.pdf'), format: 'A4', printBackground: true });
+      } catch {}
       parsed.snapshot_dir = dir;
     }
 
@@ -207,10 +214,6 @@ export async function scrapeAuction(url, opts = {}) {
   }
 }
 
-/**
- * scrapeAuction with a few retries — used for the very first fetch where
- * we want to be confident we got the end_at correctly.
- */
 export async function scrapeAuctionWithRetry(url, opts = {}, attempts = 3) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
