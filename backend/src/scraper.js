@@ -66,24 +66,34 @@ const LABEL_ALIASES = {
 // ---------------------------------------------------------------------------
 async function switchToEnglish(page) {
   try {
+    // The currently-selected language is shown in .dd-lang's IMG (alt set there)
     const currentLang = await page.evaluate(
       () => document.querySelector('.dd-lang img')?.alt || null
     );
     if (currentLang === 'en' || !currentLang) return;
 
-    // Open the dropdown
+    // Open the dropdown panel
     await page.click('.dd-lang', { timeout: 3000 });
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(500);
+    await page
+      .waitForSelector('.p-dropdown-panel, .p-dropdown-items', { timeout: 3000 })
+      .catch(() => {});
 
-    // Find and click the "en" option in the now-visible panel
+    // Click the English option — the <li> has aria-label="en"
+    // (the <img> alt inside the option is empty, so we can't use that)
     const clicked = await page.evaluate(() => {
-      const items = document.querySelectorAll(
-        '.p-dropdown-panel .p-dropdown-item, .p-dropdown-items li, [role="option"]'
-      );
-      for (const item of items) {
-        const img = item.querySelector('img');
-        if (img && img.alt === 'en') {
-          item.click();
+      const item =
+        document.querySelector('.p-dropdown-item[aria-label="en"]') ||
+        document.querySelector('[role="option"][aria-label="en"]');
+      if (item) {
+        item.click();
+        return true;
+      }
+      // Fallback: find by visible text "English"
+      const items = document.querySelectorAll('.p-dropdown-item, [role="option"]');
+      for (const li of items) {
+        if (/^\s*English\s*$/i.test(li.innerText)) {
+          li.click();
           return true;
         }
       }
@@ -91,7 +101,7 @@ async function switchToEnglish(page) {
     });
 
     if (clicked) {
-      // Vue re-renders the labels — give it a beat
+      // Vue re-renders the entire page in English — give it a beat
       await page.waitForTimeout(2500);
     }
   } catch (err) {
