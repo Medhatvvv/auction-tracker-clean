@@ -1,3 +1,6 @@
+// IMPORTANT: replace this URL with your own backend URL after deploying.
+const BACKEND_URL = 'https://backend-production-fe31.up.railway.app';
+
 export type Auction = {
   id: number;
   url: string;
@@ -12,13 +15,13 @@ export type Auction = {
   created_at: string;
   updated_at: string;
   last_error: string | null;
+  image_urls: string[];
 };
 
 export type BidPoint = { current_bid: number | null; captured_at: string };
-
 export type AuctionDetail = Auction & { history: BidPoint[] };
 
-const API = 'https://backend-production-fe31.up.railway.app/api';
+const API = `${BACKEND_URL}/api`;
 
 export async function listAuctions(): Promise<Auction[]> {
   const res = await fetch(`${API}/auctions`, { cache: 'no-store' });
@@ -54,10 +57,10 @@ export function snapshotUrl(id: number, asset: 'page.html' | 'page.png' | 'page.
   return `${API}/auctions/${id}/snapshot/${asset}`;
 }
 
-// Connect to the backend WS. Falls back gracefully if unavailable.
 export function openWS(onMessage: (msg: any) => void): () => void {
   if (typeof window === 'undefined') return () => {};
-  const ws = new WebSocket('wss://backend-production-fe31.up.railway.app/ws');
+  const wsUrl = BACKEND_URL.replace(/^http/, 'ws') + '/ws';
+  const ws = new WebSocket(wsUrl);
   ws.onmessage = (ev) => {
     try { onMessage(JSON.parse(ev.data)); } catch {}
   };

@@ -3,28 +3,13 @@
 @tailwind utilities;
 
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap');
- 
-:root {
-  color-scheme: dark;
-}
- 
-html, body {
-  background: #0a0a0a;
-  color: #f5f3ee;
-  font-family: 'Geist', system-ui, sans-serif;
-}
 
-/* Subtle grid backdrop */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
-  background-size: 48px 48px;
-  pointer-events: none;
-  z-index: 0;
+:root { color-scheme: light; }
+
+html, body {
+  background: #fafafa;
+  color: #0f172a;
+  font-family: 'Geist', system-ui, sans-serif;
 }
 
 .tabular { font-variant-numeric: tabular-nums; }
@@ -35,3 +20,11 @@ body::before {
   50%      { opacity: 0.4; transform: scale(0.85); }
 }
 .live-dot { animation: liveDot 1.4s ease-in-out infinite; }
+
+/* Soft card shadow used across the app */
+.card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
