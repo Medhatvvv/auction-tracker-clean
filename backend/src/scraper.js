@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import { SNAPSHOT_DIR } from './db.js';
 
 // ---------------------------------------------------------------------------
-// Browser singleton — reuse one Chromium between scrapes for speed.
+// Browser singleton
 // ---------------------------------------------------------------------------
 let browserPromise = null;
 
@@ -28,10 +28,11 @@ export async function shutdownBrowser() {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Parsing helpers
 // ---------------------------------------------------------------------------
 export function parseEuroAmount(text) {
   if (!text) return null;
+  // Strip everything except digits, comma, dot
   const cleaned = text
     .replace(/€/g, '')
     .replace(/\u00A0/g, ' ')
@@ -61,15 +62,53 @@ const LABEL_ALIASES = {
 };
 
 // ---------------------------------------------------------------------------
-// Click through the image gallery and collect every image URL.
-// Returns an array of absolute URLs. Capped at 60 images for safety.
+// Switch the site's language to English using the in-page dropdown.
+// ---------------------------------------------------------------------------
+async function switchToEnglish(page) {
+  try {
+    const currentLang = await page.evaluate(
+      () => document.querySelector('.dd-lang img')?.alt || null
+    );
+    if (currentLang === 'en' || !currentLang) return;
+
+    // Open the dropdown
+    await page.click('.dd-lang', { timeout: 3000 });
+    await page.waitForTimeout(400);
+
+    // Find and click the "en" option in the now-visible panel
+    const clicked = await page.evaluate(() => {
+      const items = document.querySelectorAll(
+        '.p-dropdown-panel .p-dropdown-item, .p-dropdown-items li, [role="option"]'
+      );
+      for (const item of items) {
+        const img = item.querySelector('img');
+        if (img && img.alt === 'en') {
+          item.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (clicked) {
+      // Vue re-renders the labels — give it a beat
+      await page.waitForTimeout(2500);
+    }
+  } catch (err) {
+    console.warn('[scraper] language switch failed (continuing in PT):', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Walk through the image gallery and collect every image URL
 // ---------------------------------------------------------------------------
 async function captureGalleryImages(page) {
-  // Read the "X/Y" indicator in the gallery footer to know how many to walk.
+  await page.waitForSelector('.p-galleria-item', { timeout: 5000 }).catch(() => {});
+
   const total = await page.evaluate(() => {
     const text = document.querySelector('.title-container')?.innerText || '';
-    const m = text.match(/\d+\s*\/\s*(\d+)/);
-    return m ? parseInt(m[1], 10) : 1;
+    const m = text.match(/(\d+)\s*\/\s*(\d+)/);
+    return m ? parseInt(m[2], 10) : 1;
   }).catch(() => 1);
 
   const limit = Math.min(total, 60);
@@ -79,21 +118,23 @@ async function captureGalleryImages(page) {
     const url = await page.evaluate(() => {
       const item = document.querySelector('.p-galleria-item');
       if (!item) return null;
-      // Image is set as a background-image style on the inner div
-      const inner = item.querySelector('[style*="background-image"]') || item;
-      const bg = (inner.style?.backgroundImage) || '';
-      const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
-      return m ? m[1] : null;
+      // Image is set as background-image on either the item or a descendant
+      const nodes = [item, ...item.querySelectorAll('[style*="background-image"]')];
+      for (const node of nodes) {
+        const bg = node.style?.backgroundImage || '';
+        const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+        if (m) return m[1];
+      }
+      return null;
     }).catch(() => null);
 
     if (url) urls.add(url);
 
     if (i < limit - 1) {
-      // Click "next" arrow. If it isn't there, stop early.
-      const ok = await page.click('.p-galleria-item-next', { timeout: 800 })
+      const ok = await page.click('.p-galleria-item-next', { timeout: 1500, force: true })
         .then(() => true).catch(() => false);
       if (!ok) break;
-      await page.waitForTimeout(250); // give the carousel time to swap
+      await page.waitForTimeout(300);
     }
   }
 
@@ -122,10 +163,10 @@ export async function scrapeAuction(url, opts = {}) {
       throw new Error(`HTTP ${resp ? resp.status() : 'no-response'} for ${url}`);
     }
 
-    // ── Wait for actual VALUES (not just labels) to be rendered ─────────
-    // The page renders the labels statically but loads bid info via XHR.
-    // Last time we waited only for the label, which appeared too early.
-    // This waits for the label AND a euro amount AND an end date.
+    // 1. Force the page into English so labels are predictable
+    await switchToEnglish(page);
+
+    // 2. Wait until the actual VALUES are rendered (not just labels)
     await page.waitForFunction(() => {
       const t = document.body.innerText || '';
       const hasBid =
@@ -135,20 +176,17 @@ export async function scrapeAuction(url, opts = {}) {
         /End\s*:?\s*\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/i.test(t) ||
         /Fim\s*:?\s*\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/i.test(t);
       return hasBid && hasEnd;
-    }, { timeout: 20_000 }).catch(() => {});
+    }, { timeout: 25_000 }).catch(() => {});
 
-    // ── Remove any popup overlay that's blocking the page ──────────────
-    // The site shows a "FORMAÇÃO E-LEILÕES" modal on some visits.
-    // We yank it out of the DOM so it doesn't ruin the screenshot.
+    // 3. Remove any popup overlay
     await page.evaluate(() => {
       document.querySelectorAll(
         '.p-dialog-mask, .p-component-overlay, .p-dialog'
       ).forEach(el => el.remove());
-      // Restore page scroll in case the modal locked it
       document.body.style.overflow = '';
     }).catch(() => {});
 
-    // ── Extract the structured data ─────────────────────────────────────
+    // 4. Extract structured data
     const data = await page.evaluate((aliases) => {
       const text = document.body.innerText || '';
       function pickLabel(labels) {
@@ -184,12 +222,11 @@ export async function scrapeAuction(url, opts = {}) {
       image_urls:    [],
     };
 
-    // ── Snapshot capture + gallery walk (only on initial add) ──────────
+    // 5. Gallery + snapshot capture, only on initial add
     if (opts.saveSnapshot && opts.snapshotId != null) {
-      // Capture gallery first so the screenshot reflects whatever image
-      // happens to be last. (Doesn't matter visually; just an artifact.)
       try {
         parsed.image_urls = await captureGalleryImages(page);
+        console.log(`[scraper] captured ${parsed.image_urls.length} gallery images`);
       } catch (e) {
         console.warn('[scraper] gallery capture failed:', e.message);
       }
