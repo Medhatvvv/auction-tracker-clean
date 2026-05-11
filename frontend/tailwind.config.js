@@ -9,10 +9,14 @@ module.exports = {
         mono:    ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       colors: {
-        ink:    '#0a0a0a',
-        paper:  '#f5f3ee',
-        accent: '#00ff9d',
-        warn:   '#ff5b3a',
+        app:      '#fafafa',     // page bg
+        surface:  '#ffffff',     // cards
+        ink:      '#0f172a',     // primary text
+        muted:    '#64748b',     // secondary text
+        line:     '#e5e7eb',     // borders
+        accent:   '#4f46e5',     // indigo
+        positive: '#059669',     // emerald (live / current bid)
+        warn:     '#dc2626',     // red
       },
     },
   },
