@@ -196,43 +196,47 @@ export async function scrapeAuction(url, opts = {}) {
       document.body.style.overflow = '';
     }).catch(() => {});
 
-    // 4. Extract structured data
-    // 4. Extract structured data — structural first, regex fallback
+// 4. Extract structured data — specific selector → structural → regex
     const data = await page.evaluate((aliases) => {
       const fields = {};
 
-      // PASS 1: structural extraction. Walk every "label/value" flex row
-      // and match the label text against known field names.
-document.querySelectorAll('.flex.justify-content-between').forEach(row => {
-  // Only direct-child spans of the row — never the descendants
-  const directSpans = row.querySelectorAll(':scope > span');
-  if (directSpans.length < 2) return;
+      // PASS 1: high-confidence specific selectors
+      // Current Bid value uniquely has .text-right (label has same classes minus .text-right)
+      const currentBidEl = document.querySelector(
+        'span.text-xl.text-primary-800.font-semibold.text-right'
+      );
+      if (currentBidEl) {
+        fields.current_bid_raw = currentBidEl.textContent.trim();
+      }
 
-  const labelEl = directSpans[0];
-  const valueWrapper = directSpans[directSpans.length - 1];
+      // PASS 2: structural extraction for label/value flex rows
+      document.querySelectorAll('.flex.justify-content-between').forEach(row => {
+        const directSpans = row.querySelectorAll(':scope > span');
+        if (directSpans.length < 2) return;
 
-  // Value is either nested .font-semibold inside the wrapper, or the wrapper itself
-  const valueEl = valueWrapper.querySelector('.font-semibold') || valueWrapper;
+        const labelEl      = directSpans[0];
+        const valueWrapper = directSpans[directSpans.length - 1];
+        const valueEl      = valueWrapper.querySelector('.font-semibold') || valueWrapper;
 
-  const rawLabel = (labelEl.textContent || '').trim();
-  const rawValue = (valueEl.textContent || '').trim();
+        const rawLabel = (labelEl.textContent || '').trim();
+        const rawValue = (valueEl.textContent || '').trim();
         if (!rawLabel || !rawValue) return;
 
         const lbl = rawLabel.toLowerCase().replace(/:\s*$/, '').trim();
 
-        if (/^base value$|^valor base$|^valor de avalia/.test(lbl))
+        if (!fields.base_value_raw    && /^base value$|^valor base$|^valor de avalia/.test(lbl))
           fields.base_value_raw = rawValue;
-        else if (/^opening value$|^valor de abertura$/.test(lbl))
+        else if (!fields.opening_value_raw && /^opening value$|^valor de abertura$/.test(lbl))
           fields.opening_value_raw = rawValue;
-        else if (/^minimum value$|^valor m[íi]nimo$/.test(lbl))
+        else if (!fields.minimum_value_raw && /^minimum value$|^valor m[íi]nimo$/.test(lbl))
           fields.minimum_value_raw = rawValue;
-        else if (/^current bid$|^licita\S+\s+atual$|^valor atual$|^melhor licita/.test(lbl))
+        else if (!fields.current_bid_raw   && /^current bid$|^licita\S+\s+atual$|^valor atual$|^melhor licita/.test(lbl))
           fields.current_bid_raw = rawValue;
-        else if (/^end$|^fim$|^termina$/.test(lbl))
+        else if (!fields.end_raw           && /^end$|^fim$|^termina$/.test(lbl))
           fields.end_raw = rawValue;
       });
 
-      // PASS 2: regex fallback for anything still missing
+      // PASS 3: regex over innerText for anything still missing
       const text = document.body.innerText || '';
       function pickLabel(labels) {
         for (const label of labels) {
