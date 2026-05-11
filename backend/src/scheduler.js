@@ -25,14 +25,35 @@ async function pollOnce(auctionId) {
   const a = getAuction(auctionId);
   if (!a) return stopPolling(auctionId);
 
+  const previousBid   = a.current_bid;
+  const previousEndAt = a.end_at;
+
   try {
     const data = await scrapeAuction(a.url);
+
+    // Anti-snipe: if a new bid arrived in the final 5 minutes, ensure end_at
+    // is at least 5 minutes from now. Use MAX(site's value, our extension)
+    // so we never shorten and the site stays authoritative when it extends.
+    let effectiveEndAt = data.end_at || previousEndAt;
+    const fiveMin = 5 * 60 * 1000;
+    if (data.current_bid && previousBid && data.current_bid > previousBid) {
+      const currentEndMs = new Date(effectiveEndAt).getTime();
+      const minEndMs = Date.now() + fiveMin;
+      if (currentEndMs < minEndMs) {
+        effectiveEndAt = new Date(minEndMs).toISOString();
+        console.log(
+          `[scheduler] auction ${auctionId}: late bid (${previousBid} → ${data.current_bid}), ` +
+          `extending end_at to ${effectiveEndAt}`
+        );
+      }
+    }
+
     const updated = updateAuction(auctionId, {
       current_bid:   data.current_bid,
       base_value:    data.base_value,
       opening_value: data.opening_value,
       minimum_value: data.minimum_value,
-      end_at:        data.end_at,        // refresh in case site extends it
+      end_at:        effectiveEndAt,
       title:         data.title,
       status:        'watching',
       last_error:    null,
@@ -45,7 +66,7 @@ async function pollOnce(auctionId) {
     broadcast({ type: 'poll_error', auctionId, error: err.message });
   }
 
-  // After every poll, check if we're past the end + grace
+  // Stop only when we're past end + grace AND we're confident no extension came in
   const fresh = getAuction(auctionId);
   if (fresh && new Date(fresh.end_at).getTime() + POST_END_GRACE_MS < Date.now()) {
     updateAuction(auctionId, { status: 'ended' });
