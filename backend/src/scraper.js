@@ -203,14 +203,19 @@ export async function scrapeAuction(url, opts = {}) {
 
       // PASS 1: structural extraction. Walk every "label/value" flex row
       // and match the label text against known field names.
-      document.querySelectorAll('.flex.justify-content-between').forEach(row => {
-        const spans = row.querySelectorAll('span');
-        if (spans.length < 2) return;
+document.querySelectorAll('.flex.justify-content-between').forEach(row => {
+  // Only direct-child spans of the row — never the descendants
+  const directSpans = row.querySelectorAll(':scope > span');
+  if (directSpans.length < 2) return;
 
-        // First span = label, last meaningful span = value
-        const rawLabel = (spans[0].textContent || '').trim();
-        const valueEl  = row.querySelector('.font-semibold') || spans[spans.length - 1];
-        const rawValue = (valueEl?.textContent || '').trim();
+  const labelEl = directSpans[0];
+  const valueWrapper = directSpans[directSpans.length - 1];
+
+  // Value is either nested .font-semibold inside the wrapper, or the wrapper itself
+  const valueEl = valueWrapper.querySelector('.font-semibold') || valueWrapper;
+
+  const rawLabel = (labelEl.textContent || '').trim();
+  const rawValue = (valueEl.textContent || '').trim();
         if (!rawLabel || !rawValue) return;
 
         const lbl = rawLabel.toLowerCase().replace(/:\s*$/, '').trim();
