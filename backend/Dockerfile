@@ -1,6 +1,6 @@
 # Use Microsoft's Playwright image — it bundles Chromium + every system lib.
 FROM mcr.microsoft.com/playwright:v1.59.1-jammy
-
+ 
 # Install C/C++ compiler + Python — required for native npm modules
 # like better-sqlite3 when no prebuilt binary is available.
 RUN apt-get update && \
