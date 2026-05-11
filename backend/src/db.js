@@ -41,7 +41,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_auction_endat ON auctions(end_at, status);
 `);
 
-// --- Migration: add image_urls column if it doesn't exist ---
+// Migration: add image_urls column on existing databases
 try {
   db.exec(`ALTER TABLE auctions ADD COLUMN image_urls TEXT`);
   console.log('[db] migrated: added image_urls column');
@@ -97,10 +97,13 @@ function hydrate(row) {
 }
 
 export function createAuction(data) {
+  // IMPORTANT: spread `data` first, then override image_urls with the
+  // stringified version. If you reverse the order, the spread overwrites
+  // the string with the original array and SQLite throws a bind error.
   const info = stmts.insertAuction.run({
     status: 'pending',
-    ...data,                                                          
-    image_urls: data.image_urls ? JSON.stringify(data.image_urls) : null,  
+    ...data,
+    image_urls: data.image_urls ? JSON.stringify(data.image_urls) : null,
   });
   return hydrate(stmts.getAuction.get(info.lastInsertRowid));
 }
