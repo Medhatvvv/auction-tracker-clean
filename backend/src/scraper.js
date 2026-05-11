@@ -197,7 +197,37 @@ export async function scrapeAuction(url, opts = {}) {
     }).catch(() => {});
 
     // 4. Extract structured data
+    // 4. Extract structured data — structural first, regex fallback
     const data = await page.evaluate((aliases) => {
+      const fields = {};
+
+      // PASS 1: structural extraction. Walk every "label/value" flex row
+      // and match the label text against known field names.
+      document.querySelectorAll('.flex.justify-content-between').forEach(row => {
+        const spans = row.querySelectorAll('span');
+        if (spans.length < 2) return;
+
+        // First span = label, last meaningful span = value
+        const rawLabel = (spans[0].textContent || '').trim();
+        const valueEl  = row.querySelector('.font-semibold') || spans[spans.length - 1];
+        const rawValue = (valueEl?.textContent || '').trim();
+        if (!rawLabel || !rawValue) return;
+
+        const lbl = rawLabel.toLowerCase().replace(/:\s*$/, '').trim();
+
+        if (/^base value$|^valor base$|^valor de avalia/.test(lbl))
+          fields.base_value_raw = rawValue;
+        else if (/^opening value$|^valor de abertura$/.test(lbl))
+          fields.opening_value_raw = rawValue;
+        else if (/^minimum value$|^valor m[íi]nimo$/.test(lbl))
+          fields.minimum_value_raw = rawValue;
+        else if (/^current bid$|^licita\S+\s+atual$|^valor atual$|^melhor licita/.test(lbl))
+          fields.current_bid_raw = rawValue;
+        else if (/^end$|^fim$|^termina$/.test(lbl))
+          fields.end_raw = rawValue;
+      });
+
+      // PASS 2: regex fallback for anything still missing
       const text = document.body.innerText || '';
       function pickLabel(labels) {
         for (const label of labels) {
@@ -210,17 +240,17 @@ export async function scrapeAuction(url, opts = {}) {
         }
         return null;
       }
+
       return {
         title:             document.title || null,
-        base_value_raw:    pickLabel(aliases.base_value),
-        opening_value_raw: pickLabel(aliases.opening_value),
-        minimum_value_raw: pickLabel(aliases.minimum_value),
-        current_bid_raw:   pickLabel(aliases.current_bid),
-        end_raw:           pickLabel(aliases.end_label),
+        base_value_raw:    fields.base_value_raw    || pickLabel(aliases.base_value),
+        opening_value_raw: fields.opening_value_raw || pickLabel(aliases.opening_value),
+        minimum_value_raw: fields.minimum_value_raw || pickLabel(aliases.minimum_value),
+        current_bid_raw:   fields.current_bid_raw   || pickLabel(aliases.current_bid),
+        end_raw:           fields.end_raw           || pickLabel(aliases.end_label),
         url: location.href,
       };
     }, LABEL_ALIASES);
-
     const parsed = {
       title:         data.title,
       base_value:    parseEuroAmount(data.base_value_raw),
