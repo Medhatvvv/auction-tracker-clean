@@ -99,8 +99,8 @@ function hydrate(row) {
 export function createAuction(data) {
   const info = stmts.insertAuction.run({
     status: 'pending',
-    image_urls: data.image_urls ? JSON.stringify(data.image_urls) : null,
-    ...data,
+    ...data,                                                          
+    image_urls: data.image_urls ? JSON.stringify(data.image_urls) : null,  
   });
   return hydrate(stmts.getAuction.get(info.lastInsertRowid));
 }
