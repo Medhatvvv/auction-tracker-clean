@@ -5,9 +5,6 @@ import {
   getAuction, snapshotUrl, openWS,
   fmtEUR, fmtCountdown, type AuctionDetail,
 } from '@/lib/api';
-import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-} from 'recharts';
 
 export default function AuctionPage({ params }: { params: { id: string } }) {
   const id = Number(params.id);
@@ -23,8 +20,7 @@ export default function AuctionPage({ params }: { params: { id: string } }) {
     reload().catch(() => {});
     const iv = setInterval(() => tick(t => t + 1), 1000);
     const close = openWS((msg) => {
-      if ((msg.type === 'bid_update' || msg.type === 'auction_ended') &&
-          msg.auction?.id === id) {
+      if ((msg.type === 'bid_update' || msg.type === 'auction_ended') && msg.auction?.id === id) {
         reload().catch(() => {});
       }
     });
@@ -33,20 +29,21 @@ export default function AuctionPage({ params }: { params: { id: string } }) {
 
   if (!a) return <div className="text-muted font-display italic">Loading…</div>;
 
-  const ended = a.status === 'ended' || new Date(a.end_at).getTime() < Date.now();
-  const chartData = a.history
-    .filter(p => p.current_bid != null)
-    .map(p => ({ t: new Date(p.captured_at).getTime(), bid: p.current_bid! }));
+  const ended = a.status === 'ended';
+  const premium =
+    a.current_bid != null && a.minimum_value != null && a.minimum_value > 0
+      ? ((a.current_bid - a.minimum_value) / a.minimum_value) * 100
+      : null;
 
   return (
-    <div className="space-y-10">
-      <a href="/" className="font-mono text-xs uppercase tracking-widest text-muted hover:text-accent">
+    <div className="space-y-8">
+      <a href="/active" className="font-mono text-xs uppercase tracking-widest text-muted hover:text-accent">
         ← back
       </a>
 
       <header>
         <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-accent mb-2">
-          {a.external_id}
+          {a.external_id} {ended && '· ENDED'}
         </div>
         <h1 className="font-display text-4xl text-ink leading-tight">{a.title || 'Untitled lot'}</h1>
         <a href={a.url} target="_blank" rel="noreferrer"
@@ -55,15 +52,10 @@ export default function AuctionPage({ params }: { params: { id: string } }) {
         </a>
       </header>
 
-      {/* ───── Image gallery ───── */}
       {a.image_urls && a.image_urls.length > 0 && (
         <section className="card overflow-hidden">
           <div className="relative bg-slate-100 aspect-[4/3]">
-            <img
-              src={a.image_urls[activeImg]}
-              alt=""
-              className="w-full h-full object-contain"
-            />
+            <img src={a.image_urls[activeImg]} alt="" className="w-full h-full object-contain" />
             <div className="absolute top-3 right-3 bg-ink/80 text-white font-mono text-[10px] px-2 py-1 rounded">
               {activeImg + 1} / {a.image_urls.length}
             </div>
@@ -101,16 +93,27 @@ export default function AuctionPage({ params }: { params: { id: string } }) {
         </section>
       )}
 
-      {/* ───── Stat strip ───── */}
-      <section className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <section className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <Stat label="Base"        value={fmtEUR(a.base_value)} />
         <Stat label="Opening"     value={fmtEUR(a.opening_value)} />
         <Stat label="Minimum"     value={fmtEUR(a.minimum_value)} />
-        <Stat label="Current Bid" value={fmtEUR(a.current_bid)} accent />
         <Stat
-          label={ended ? 'Ended at' : 'Ends in'}
-          value={ended ? new Date(a.end_at).toLocaleString('pt-PT') : fmtCountdown(a.end_at)}
-          live={!ended && a.status === 'watching'}
+          label={ended ? 'Final bid' : 'Current bid'}
+          value={fmtEUR(a.current_bid)}
+          accent
+        />
+        <Stat
+          label="vs Minimum"
+          value={premium != null
+            ? `${premium >= 0 ? '+' : ''}${premium.toFixed(1)}%`
+            : '—'}
+          accent
+        />
+        <Stat
+          label={ended ? 'Ended at' : 'Ends'}
+          value={ended
+            ? new Date(a.end_at).toLocaleString('pt-PT')
+            : fmtCountdown(a.end_at)}
         />
       </section>
 
@@ -120,49 +123,6 @@ export default function AuctionPage({ params }: { params: { id: string } }) {
         </p>
       )}
 
-      {/* ───── Bid history chart ───── */}
-      <section>
-        <div className="flex items-baseline justify-between mb-3">
-          <h2 className="font-display text-2xl text-ink">Bid timeline</h2>
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted">
-            {chartData.length} reading{chartData.length === 1 ? '' : 's'}
-          </span>
-        </div>
-        <div className="card h-72 p-2">
-          {chartData.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-muted italic font-display">
-              No readings yet — polling begins 5 min before end time.
-            </div>
-          ) : (
-            <ResponsiveContainer>
-              <LineChart data={chartData} margin={{ top: 16, right: 24, bottom: 8, left: 8 }}>
-                <CartesianGrid stroke="#e5e7eb" />
-                <XAxis
-                  dataKey="t" type="number" domain={['dataMin', 'dataMax']}
-                  tickFormatter={(v) => new Date(v).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  stroke="#64748b"
-                  style={{ fontFamily: 'JetBrains Mono', fontSize: 10 }}
-                />
-                <YAxis
-                  tickFormatter={(v) => `€${(v / 1000).toFixed(0)}k`}
-                  stroke="#64748b"
-                  style={{ fontFamily: 'JetBrains Mono', fontSize: 10 }}
-                  domain={['dataMin - 1000', 'dataMax + 1000']}
-                />
-                <Tooltip
-                  contentStyle={{ background: '#ffffff', border: '1px solid #e5e7eb', fontFamily: 'JetBrains Mono', fontSize: 12 }}
-                  labelFormatter={(v) => new Date(v as number).toLocaleString('pt-PT')}
-                  formatter={(v) => [fmtEUR(v as number), 'Bid']}
-                />
-                <Line type="stepAfter" dataKey="bid" stroke="#059669" strokeWidth={2}
-                      dot={{ r: 3, fill: '#059669' }} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </section>
-
-      {/* ───── Snapshot ───── */}
       <section>
         <h2 className="font-display text-2xl text-ink mb-3">Original snapshot</h2>
         <p className="text-muted text-sm mb-4">
@@ -188,15 +148,12 @@ export default function AuctionPage({ params }: { params: { id: string } }) {
 }
 
 function Stat({
-  label, value, accent, live,
-}: { label: string; value: string; accent?: boolean; live?: boolean }) {
+  label, value, accent,
+}: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className="card p-4">
-      <div className="font-mono text-[10px] uppercase tracking-widest text-muted flex items-center gap-2">
-        {live && <span className="live-dot inline-block w-1.5 h-1.5 rounded-full bg-positive" />}
-        {label}
-      </div>
-      <div className={`mt-1 font-mono tabular text-lg ${accent ? 'text-positive font-semibold' : 'text-ink'}`}>
+    <div className="card p-3">
+      <div className="font-mono text-[10px] uppercase tracking-widest text-muted">{label}</div>
+      <div className={`mt-1 font-mono tabular text-base ${accent ? 'text-positive font-semibold' : 'text-ink'}`}>
         {value}
       </div>
     </div>

@@ -14,14 +14,12 @@ html, body {
 
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* Pulse for "live" indicator */
 @keyframes liveDot {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.4; transform: scale(0.85); }
 }
 .live-dot { animation: liveDot 1.4s ease-in-out infinite; }
 
-/* Soft card shadow used across the app */
 .card {
   background: #ffffff;
   border: 1px solid #e5e7eb;

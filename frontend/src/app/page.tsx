@@ -1,149 +1,136 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import {
-  listAuctions, addAuction, deleteAuction, openWS,
-  fmtEUR, fmtCountdown, type Auction,
-} from '@/lib/api';
+import { listAuctions, openWS, fmtEUR, type Auction } from '@/lib/api';
+import AddAuctionForm from '@/components/AddAuctionForm';
+import StatCard from '@/components/StatCard';
 
-export default function HomePage() {
+export default function Dashboard() {
   const [auctions, setAuctions] = useState<Auction[]>([]);
-  const [url, setUrl] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [, tick] = useState(0);
 
   async function reload() {
     setAuctions(await listAuctions());
   }
-
   useEffect(() => {
     reload().catch(console.error);
-    const iv = setInterval(() => tick(t => t + 1), 1000);
     const close = openWS((msg) => {
       if (msg.type === 'bid_update' || msg.type === 'auction_ended') {
         reload().catch(console.error);
       }
     });
-    return () => { clearInterval(iv); close(); };
+    return close;
   }, []);
 
-  async function onAdd(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true); setError(null);
-    try {
-      await addAuction(url.trim());
-      setUrl('');
-      await reload();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  // Stats
+  const active = auctions.filter(a => a.status !== 'ended');
+  const ended  = auctions.filter(a => a.status === 'ended');
 
-  async function onDelete(id: number) {
-    if (!confirm('Remove this auction from the watchlist?')) return;
-    await deleteAuction(id);
-    await reload();
-  }
+  const totalMinValue = ended
+    .filter(a => a.minimum_value != null)
+    .reduce((sum, a) => sum + (a.minimum_value ?? 0), 0);
+  const totalFinalBid = ended
+    .filter(a => a.current_bid != null)
+    .reduce((sum, a) => sum + (a.current_bid ?? 0), 0);
+
+  const avgPremium = (() => {
+    const samples = ended.filter(a => a.minimum_value && a.current_bid);
+    if (samples.length === 0) return null;
+    const sum = samples.reduce(
+      (s, a) => s + ((a.current_bid! - a.minimum_value!) / a.minimum_value!) * 100,
+      0
+    );
+    return sum / samples.length;
+  })();
 
   return (
-    <div className="space-y-10">
-      <section>
-        <h1 className="font-display text-4xl text-ink mb-1">Watchlist</h1>
-        <p className="text-muted text-sm mb-6">
-          Paste an e-leiloes.pt event URL. We&apos;ll snapshot the page now and
-          start polling every 30s during the final 5 minutes.
+    <div className="space-y-8">
+      <header>
+        <h1 className="font-display text-4xl text-ink">Dashboard</h1>
+        <p className="text-muted text-sm mt-1">
+          Overview of every auction you&apos;re watching. Checks run 30 minutes after each listed end time.
         </p>
-        <form onSubmit={onAdd} className="flex gap-2">
-          <input
-            type="url" required
-            placeholder="https://e-leiloes.pt/evento/LO1466402026"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            className="flex-1 bg-surface border border-line rounded-md px-4 py-3
-                       font-mono text-sm text-ink placeholder:text-muted
-                       focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-          />
-          <button
-            type="submit" disabled={busy}
-            className="rounded-md px-6 py-3 bg-accent text-white font-mono text-xs
-                       uppercase tracking-[0.2em] disabled:opacity-40 hover:bg-indigo-700"
-          >
-            {busy ? 'Adding…' : 'Add'}
-          </button>
-        </form>
-        {error && <p className="mt-3 text-warn font-mono text-xs">⚠ {error}</p>}
+      </header>
+
+      <section className="card p-5">
+        <h2 className="font-mono text-[11px] uppercase tracking-widest text-muted mb-3">
+          Add to watchlist
+        </h2>
+        <AddAuctionForm onAdded={reload} />
       </section>
 
-      <section>
-        {auctions.length === 0 ? (
-          <div className="card p-16 text-center">
-            <p className="font-display italic text-2xl text-muted">Nothing watched yet.</p>
-          </div>
-        ) : (
-          <ul className="card divide-y divide-line overflow-hidden">
-            {auctions.map((a) => <Row key={a.id} a={a} onDelete={onDelete} />)}
-          </ul>
-        )}
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="Active" value={String(active.length)} hint="being watched" accent="accent" />
+        <StatCard label="Ended"  value={String(ended.length)}  hint="confirmed completed" />
+        <StatCard
+          label="Avg premium over min"
+          value={avgPremium != null ? `${avgPremium >= 0 ? '+' : ''}${avgPremium.toFixed(1)}%` : '—'}
+          hint="ended auctions"
+          accent={avgPremium != null && avgPremium >= 0 ? 'positive' : 'warn'}
+        />
+        <StatCard
+          label="Total final vs min"
+          value={
+            totalFinalBid > 0
+              ? `${fmtEUR(totalFinalBid)} / ${fmtEUR(totalMinValue)}`
+              : '—'
+          }
+          hint="ended auctions, sum"
+        />
+      </section>
+
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <RecentList title="Recently added (active)" items={active.slice(0, 5)} mode="active" />
+        <RecentList title="Recently ended" items={ended.slice(0, 5)} mode="ended" />
       </section>
     </div>
   );
 }
 
-function Row({ a, onDelete }: { a: Auction; onDelete: (id: number) => void }) {
-  const ended = a.status === 'ended' || new Date(a.end_at).getTime() < Date.now();
-  const watching = a.status === 'watching' && !ended;
-  const thumb = a.image_urls?.[0];
-
+function RecentList({
+  title, items, mode,
+}: {
+  title: string;
+  items: Auction[];
+  mode: 'active' | 'ended';
+}) {
   return (
-    <li className="grid grid-cols-12 gap-4 px-5 py-4 items-center hover:bg-slate-50 transition-colors">
-      <a href={`/auction/${a.id}`} className="col-span-5 flex items-center gap-3 min-w-0">
-        {thumb ? (
-          <img src={thumb} alt="" className="w-14 h-14 object-cover rounded border border-line flex-shrink-0" />
-        ) : (
-          <div className="w-14 h-14 rounded bg-slate-100 border border-line flex-shrink-0" />
-        )}
-        <div className="min-w-0">
-          <div className="font-display text-lg leading-tight truncate text-ink hover:text-accent">
-            {a.title || a.external_id || a.url}
-          </div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-muted mt-0.5">
-            {a.external_id}
-          </div>
-        </div>
-      </a>
-
-      <div className="col-span-2 text-right">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-muted">Bid</div>
-        <div className="font-mono tabular text-lg text-positive">{fmtEUR(a.current_bid)}</div>
+    <div className="card overflow-hidden">
+      <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+        <h3 className="font-mono text-[11px] uppercase tracking-widest text-muted">{title}</h3>
+        <a href={`/${mode}`} className="font-mono text-[10px] uppercase tracking-widest text-accent hover:underline">
+          view all →
+        </a>
       </div>
-
-      <div className="col-span-2 text-right">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-muted">Min</div>
-        <div className="font-mono tabular text-sm text-muted">{fmtEUR(a.minimum_value)}</div>
-      </div>
-
-      <div className="col-span-2 text-right">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-muted flex items-center justify-end gap-2">
-          {watching && <span className="live-dot inline-block w-1.5 h-1.5 rounded-full bg-positive" />}
-          {ended ? 'Ended' : 'Ends in'}
-        </div>
-        <div className={`font-mono tabular text-sm ${ended ? 'text-muted' : 'text-ink'}`}>
-          {ended ? new Date(a.end_at).toLocaleString('pt-PT') : fmtCountdown(a.end_at)}
-        </div>
-      </div>
-
-      <div className="col-span-1 text-right">
-        <button
-          onClick={() => onDelete(a.id)}
-          aria-label="Remove"
-          className="text-muted hover:text-warn px-2 py-1 font-mono text-base"
-        >
-          ×
-        </button>
-      </div>
-    </li>
+      {items.length === 0 ? (
+        <p className="px-4 py-6 text-muted italic font-display text-sm text-center">
+          Nothing here yet.
+        </p>
+      ) : (
+        <ul className="divide-y divide-line">
+          {items.map(a => (
+            <li key={a.id} className="px-4 py-2.5">
+              <a href={`/auction/${a.id}`} className="flex items-center gap-2.5 hover:text-accent">
+                {a.image_urls?.[0] ? (
+                  <img src={a.image_urls[0]} alt="" className="w-9 h-9 object-cover rounded border border-line" />
+                ) : (
+                  <div className="w-9 h-9 rounded bg-slate-100 border border-line" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="font-display text-sm leading-tight truncate text-ink">
+                    {a.title || a.external_id}
+                  </div>
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-muted">
+                    {a.external_id}
+                  </div>
+                </div>
+                <div className="font-mono tabular text-sm text-positive font-semibold flex-shrink-0">
+                  {fmtEUR(a.current_bid)}
+                </div>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

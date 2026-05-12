@@ -4,11 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { SNAPSHOT_DIR } from './db.js';
 
-// ---------------------------------------------------------------------------
-// Browser singleton — reuse one Chromium between scrapes for speed.
-// ---------------------------------------------------------------------------
 let browserPromise = null;
-
 function getBrowser() {
   if (!browserPromise) {
     browserPromise = chromium.launch({
@@ -18,7 +14,6 @@ function getBrowser() {
   }
   return browserPromise;
 }
-
 export async function shutdownBrowser() {
   if (browserPromise) {
     const b = await browserPromise;
@@ -27,9 +22,6 @@ export async function shutdownBrowser() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 export function parseEuroAmount(text) {
   if (!text) return null;
   const cleaned = text
@@ -60,55 +52,68 @@ const LABEL_ALIASES = {
   end_label:     ['End', 'Fim', 'Termina'],
 };
 
-// ---------------------------------------------------------------------------
-// Click through the image gallery and collect every image URL.
-// Returns an array of absolute URLs. Capped at 60 images for safety.
-// ---------------------------------------------------------------------------
+async function switchToEnglish(page) {
+  try {
+    const currentLang = await page.evaluate(
+      () => document.querySelector('.dd-lang img')?.alt || null
+    );
+    if (currentLang === 'en' || !currentLang) return;
+    await page.click('.dd-lang', { timeout: 3000 });
+    await page.waitForTimeout(500);
+    await page.waitForSelector('.p-dropdown-panel, .p-dropdown-items', { timeout: 3000 }).catch(() => {});
+    const clicked = await page.evaluate(() => {
+      const item =
+        document.querySelector('.p-dropdown-item[aria-label="en"]') ||
+        document.querySelector('[role="option"][aria-label="en"]');
+      if (item) { item.click(); return true; }
+      const items = document.querySelectorAll('.p-dropdown-item, [role="option"]');
+      for (const li of items) {
+        if (/^\s*English\s*$/i.test(li.innerText)) { li.click(); return true; }
+      }
+      return false;
+    });
+    if (clicked) await page.waitForTimeout(2500);
+  } catch (err) {
+    console.warn('[scraper] language switch failed:', err.message);
+  }
+}
+
 async function captureGalleryImages(page) {
-  // Read the "X/Y" indicator in the gallery footer to know how many to walk.
+  await page.waitForSelector('.p-galleria-item', { timeout: 5000 }).catch(() => {});
   const total = await page.evaluate(() => {
     const text = document.querySelector('.title-container')?.innerText || '';
-    const m = text.match(/\d+\s*\/\s*(\d+)/);
-    return m ? parseInt(m[1], 10) : 1;
+    const m = text.match(/(\d+)\s*\/\s*(\d+)/);
+    return m ? parseInt(m[2], 10) : 1;
   }).catch(() => 1);
-
   const limit = Math.min(total, 60);
   const urls  = new Set();
-
   for (let i = 0; i < limit; i++) {
     const url = await page.evaluate(() => {
       const item = document.querySelector('.p-galleria-item');
       if (!item) return null;
-      // Image is set as a background-image style on the inner div
-      const inner = item.querySelector('[style*="background-image"]') || item;
-      const bg = (inner.style?.backgroundImage) || '';
-      const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
-      return m ? m[1] : null;
+      const nodes = [item, ...item.querySelectorAll('[style*="background-image"]')];
+      for (const node of nodes) {
+        const bg = node.style?.backgroundImage || '';
+        const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+        if (m) return m[1];
+      }
+      return null;
     }).catch(() => null);
-
     if (url) urls.add(url);
-
     if (i < limit - 1) {
-      // Click "next" arrow. If it isn't there, stop early.
-      const ok = await page.click('.p-galleria-item-next', { timeout: 800 })
+      const ok = await page.click('.p-galleria-item-next', { timeout: 1500, force: true })
         .then(() => true).catch(() => false);
       if (!ok) break;
-      await page.waitForTimeout(250); // give the carousel time to swap
+      await page.waitForTimeout(300);
     }
   }
-
   return Array.from(urls);
 }
 
-// ---------------------------------------------------------------------------
-// Main scrape
-// ---------------------------------------------------------------------------
 export async function scrapeAuction(url, opts = {}) {
   const browser = await getBrowser();
   const ctx = await browser.newContext({
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/130.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36',
     viewport: { width: 1366, height: 900 },
     locale: 'en-US',
   });
@@ -122,34 +127,89 @@ export async function scrapeAuction(url, opts = {}) {
       throw new Error(`HTTP ${resp ? resp.status() : 'no-response'} for ${url}`);
     }
 
-    // ── Wait for actual VALUES (not just labels) to be rendered ─────────
-    // The page renders the labels statically but loads bid info via XHR.
-    // Last time we waited only for the label, which appeared too early.
-    // This waits for the label AND a euro amount AND an end date.
+    await switchToEnglish(page);
+
+    // Wait for either an active-state signal OR an ended-state signal
     await page.waitForFunction(() => {
       const t = document.body.innerText || '';
       const hasBid =
         /Current Bid\s*:?\s*[\d.,\s]+€/i.test(t) ||
         /Licita\S+\s+Atual\s*:?\s*[\d.,\s]+€/i.test(t);
-      const hasEnd =
-        /End\s*:?\s*\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/i.test(t) ||
-        /Fim\s*:?\s*\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}/i.test(t);
-      return hasBid && hasEnd;
-    }, { timeout: 20_000 }).catch(() => {});
+      const hasEndedText =
+        /auction\s+(has\s+)?ended/i.test(t) ||
+        /leil[ãa]o\s+terminou/i.test(t);
+      const hasEndDate =
+        /End\s*:?\s*\d{2}\/\d{2}\/\d{4}/i.test(t) ||
+        /Fim\s*:?\s*\d{2}\/\d{2}\/\d{4}/i.test(t);
+      return (hasBid && hasEndDate) || hasEndedText;
+    }, { timeout: 25_000 }).catch(() => {});
 
-    // ── Remove any popup overlay that's blocking the page ──────────────
-    // The site shows a "FORMAÇÃO E-LEILÕES" modal on some visits.
-    // We yank it out of the DOM so it doesn't ruin the screenshot.
+    // Remove popup
     await page.evaluate(() => {
-      document.querySelectorAll(
-        '.p-dialog-mask, .p-component-overlay, .p-dialog'
-      ).forEach(el => el.remove());
-      // Restore page scroll in case the modal locked it
+      document.querySelectorAll('.p-dialog-mask, .p-component-overlay, .p-dialog')
+        .forEach(el => el.remove());
       document.body.style.overflow = '';
     }).catch(() => {});
 
-    // ── Extract the structured data ─────────────────────────────────────
     const data = await page.evaluate((aliases) => {
+      const fields = {};
+
+      // ===== PASS 1: specific high-confidence selectors =====
+
+      // Current Bid: unique by .text-right combined with the other classes
+      const currentBidEl = document.querySelector(
+        'span.text-xl.text-primary-800.font-semibold.text-right'
+      );
+      if (currentBidEl) {
+        fields.current_bid_raw = currentBidEl.textContent.trim();
+      }
+
+      // Opening Value: find the flex row whose label is "Opening Value",
+      // then take its .text-right > .font-semibold child
+      const allRows = Array.from(
+        document.querySelectorAll('.flex.justify-content-between')
+      );
+      for (const row of allRows) {
+        const firstSpan = row.querySelector(':scope > span');
+        if (!firstSpan) continue;
+        const labelText = (firstSpan.textContent || '').trim().toLowerCase();
+        if (/^opening value:?$|^valor de abertura:?$/.test(labelText)) {
+          const valueEl = row.querySelector('span.text-right > span.font-semibold');
+          if (valueEl) {
+            fields.opening_value_raw = valueEl.textContent.trim();
+          }
+          break;
+        }
+      }
+
+      // ===== PASS 2: structural extraction for remaining fields =====
+      allRows.forEach(row => {
+        const directSpans = row.querySelectorAll(':scope > span');
+        if (directSpans.length < 2) return;
+
+        const labelEl      = directSpans[0];
+        const valueWrapper = directSpans[directSpans.length - 1];
+        const valueEl      = valueWrapper.querySelector('.font-semibold') || valueWrapper;
+
+        const rawLabel = (labelEl.textContent || '').trim();
+        const rawValue = (valueEl.textContent || '').trim();
+        if (!rawLabel || !rawValue) return;
+
+        const lbl = rawLabel.toLowerCase().replace(/:\s*$/, '').trim();
+
+        if (!fields.base_value_raw    && /^base value$|^valor base$|^valor de avalia/.test(lbl))
+          fields.base_value_raw = rawValue;
+        else if (!fields.opening_value_raw && /^opening value$|^valor de abertura$/.test(lbl))
+          fields.opening_value_raw = rawValue;
+        else if (!fields.minimum_value_raw && /^minimum value$|^valor m[íi]nimo$/.test(lbl))
+          fields.minimum_value_raw = rawValue;
+        else if (!fields.current_bid_raw   && /^current bid$|^licita\S+\s+atual$|^valor atual$|^melhor licita/.test(lbl))
+          fields.current_bid_raw = rawValue;
+        else if (!fields.end_raw           && /^end$|^fim$|^termina$/.test(lbl))
+          fields.end_raw = rawValue;
+      });
+
+      // ===== PASS 3: regex fallback =====
       const text = document.body.innerText || '';
       function pickLabel(labels) {
         for (const label of labels) {
@@ -162,13 +222,18 @@ export async function scrapeAuction(url, opts = {}) {
         }
         return null;
       }
+
+      // ===== Ended state detection =====
+      const hasEnded = /auction\s+(has\s+)?ended|leil[ãa]o\s+terminou|this\s+online\s+auction\s+ended/i.test(text);
+
       return {
         title:             document.title || null,
-        base_value_raw:    pickLabel(aliases.base_value),
-        opening_value_raw: pickLabel(aliases.opening_value),
-        minimum_value_raw: pickLabel(aliases.minimum_value),
-        current_bid_raw:   pickLabel(aliases.current_bid),
-        end_raw:           pickLabel(aliases.end_label),
+        base_value_raw:    fields.base_value_raw    || pickLabel(aliases.base_value),
+        opening_value_raw: fields.opening_value_raw || pickLabel(aliases.opening_value),
+        minimum_value_raw: fields.minimum_value_raw || pickLabel(aliases.minimum_value),
+        current_bid_raw:   fields.current_bid_raw   || pickLabel(aliases.current_bid),
+        end_raw:           fields.end_raw           || pickLabel(aliases.end_label),
+        has_ended:         hasEnded,
         url: location.href,
       };
     }, LABEL_ALIASES);
@@ -180,16 +245,15 @@ export async function scrapeAuction(url, opts = {}) {
       minimum_value: parseEuroAmount(data.minimum_value_raw),
       current_bid:   parseEuroAmount(data.current_bid_raw),
       end_at:        parsePortugueseDateTime(data.end_raw),
+      has_ended:     data.has_ended === true,
       raw:           data,
       image_urls:    [],
     };
 
-    // ── Snapshot capture + gallery walk (only on initial add) ──────────
     if (opts.saveSnapshot && opts.snapshotId != null) {
-      // Capture gallery first so the screenshot reflects whatever image
-      // happens to be last. (Doesn't matter visually; just an artifact.)
       try {
         parsed.image_urls = await captureGalleryImages(page);
+        console.log(`[scraper] captured ${parsed.image_urls.length} gallery images`);
       } catch (e) {
         console.warn('[scraper] gallery capture failed:', e.message);
       }
@@ -197,11 +261,9 @@ export async function scrapeAuction(url, opts = {}) {
       const id  = String(opts.snapshotId);
       const dir = path.join(SNAPSHOT_DIR, id);
       await fs.mkdir(dir, { recursive: true });
-
       const html = await page.content();
       await fs.writeFile(path.join(dir, 'page.html'), html, 'utf8');
       await page.screenshot({ path: path.join(dir, 'page.png'), fullPage: true });
-
       try {
         await page.pdf({ path: path.join(dir, 'page.pdf'), format: 'A4', printBackground: true });
       } catch {}

@@ -6,3 +6,5 @@ backend/data
 .DS_Store
 .env
 .env.local
+auction-tracker.zip
+auction-tracker-*/
