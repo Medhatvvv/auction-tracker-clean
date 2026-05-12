@@ -130,18 +130,17 @@ export async function scrapeAuction(url, opts = {}) {
     await switchToEnglish(page);
 
     // Wait for either an active-state signal OR an ended-state signal
-    await page.waitForFunction(() => {
+await page.waitForFunction(() => {
       const t = document.body.innerText || '';
       const hasBid =
-        /Current Bid\s*:?\s*[\d.,\s]+€/i.test(t) ||
-        /Licita\S+\s+Atual\s*:?\s*[\d.,\s]+€/i.test(t);
-      const hasEndedText =
-        /auction\s+(has\s+)?ended/i.test(t) ||
-        /leil[ãa]o\s+terminou/i.test(t);
+        /(?:Current Bid|Licita\S+\s+Atual|P\.\s+Mais\s+Alta|Highest\s+Proposal)\s*:?\s*[\d.,\s]+€/i.test(t);
+      const hasEnded =
+        /terminou\s+em/i.test(t) ||
+        /ended\s+(on|in)/i.test(t) ||
+        /auction\s+(has\s+)?ended/i.test(t);
       const hasEndDate =
-        /End\s*:?\s*\d{2}\/\d{2}\/\d{4}/i.test(t) ||
-        /Fim\s*:?\s*\d{2}\/\d{2}\/\d{4}/i.test(t);
-      return (hasBid && hasEndDate) || hasEndedText;
+        /(?:End|Fim)\s*:?\s*\d{2}\/\d{2}\/\d{4}/i.test(t);
+      return (hasBid && hasEndDate) || hasEnded;
     }, { timeout: 25_000 }).catch(() => {});
 
     // Remove popup
