@@ -151,92 +151,83 @@ export async function scrapeAuction(url, opts = {}) {
       document.body.style.overflow = '';
     }).catch(() => {});
 
-    const data = await page.evaluate((aliases) => {
+const data = await page.evaluate((aliases) => {
       const fields = {};
+      const dbg = [];
 
-      // ===== PASS 1: specific high-confidence selectors =====
-
-      // Current Bid: unique by .text-right combined with the other classes
+      // ===== Current Bid via unique .text-right class combo =====
       const currentBidEl = document.querySelector(
         'span.text-xl.text-primary-800.font-semibold.text-right'
       );
       if (currentBidEl) {
         fields.current_bid_raw = currentBidEl.textContent.trim();
+        dbg.push(`Current Bid: "${fields.current_bid_raw}"`);
+      } else {
+        dbg.push(`Current Bid: SELECTOR FAILED`);
       }
 
-      // Opening Value: find the flex row whose label is "Opening Value",
-      // then take its .text-right > .font-semibold child
-      const allRows = Array.from(
-        document.querySelectorAll('.flex.justify-content-between')
-      );
-      for (const row of allRows) {
+      // ===== Walk ALL flex rows, log each one's label and value =====
+      const allRows = Array.from(document.querySelectorAll('.flex.justify-content-between'));
+      dbg.push(`Found ${allRows.length} flex.justify-content-between rows`);
+
+      allRows.forEach((row, idx) => {
         const firstSpan = row.querySelector(':scope > span');
-        if (!firstSpan) continue;
-        const labelText = (firstSpan.textContent || '').trim().toLowerCase();
-        if (/^opening value:?$|^valor de abertura:?$/.test(labelText)) {
-          const valueEl = row.querySelector('span.text-right > span.font-semibold');
-          if (valueEl) {
-            fields.opening_value_raw = valueEl.textContent.trim();
-          }
-          break;
-        }
-      }
+        const labelRaw  = firstSpan ? (firstSpan.textContent || '').trim() : '';
+        if (!labelRaw) return;
 
-      // ===== PASS 2: structural extraction for remaining fields =====
-      allRows.forEach(row => {
-        const directSpans = row.querySelectorAll(':scope > span');
-        if (directSpans.length < 2) return;
+        // Try multiple ways to get the value
+        const tryValue = (sel) => {
+          const el = row.querySelector(sel);
+          if (!el) return null;
+          const t = (el.textContent || '').trim();
+          return /\d/.test(t) ? t : null;
+        };
+        const value =
+          tryValue('span.text-right > span.font-semibold') ||
+          tryValue('.font-semibold') ||
+          tryValue(':scope > span:nth-child(2)');
 
-        const labelEl      = directSpans[0];
-        const valueWrapper = directSpans[directSpans.length - 1];
-        const valueEl      = valueWrapper.querySelector('.font-semibold') || valueWrapper;
+        dbg.push(`Row ${idx}: label="${labelRaw.substring(0, 30)}" value="${value || '(none)'}"`);
 
-        const rawLabel = (labelEl.textContent || '').trim();
-        const rawValue = (valueEl.textContent || '').trim();
-        if (!rawLabel || !rawValue) return;
+        if (!value) return;
+        const lbl = labelRaw.toLowerCase().replace(/:\s*$/, '').trim();
 
-        const lbl = rawLabel.toLowerCase().replace(/:\s*$/, '').trim();
-
-        if (!fields.base_value_raw    && /^base value$|^valor base$|^valor de avalia/.test(lbl))
-          fields.base_value_raw = rawValue;
-        else if (!fields.opening_value_raw && /^opening value$|^valor de abertura$/.test(lbl))
-          fields.opening_value_raw = rawValue;
-        else if (!fields.minimum_value_raw && /^minimum value$|^valor m[íi]nimo$/.test(lbl))
-          fields.minimum_value_raw = rawValue;
-        else if (!fields.current_bid_raw   && /^current bid$|^licita\S+\s+atual$|^valor atual$|^melhor licita/.test(lbl))
-          fields.current_bid_raw = rawValue;
-        else if (!fields.end_raw           && /^end$|^fim$|^termina$/.test(lbl))
-          fields.end_raw = rawValue;
+        if (!fields.base_value_raw    && /base value|valor base|valor de avalia/i.test(lbl))
+          fields.base_value_raw = value;
+        if (!fields.opening_value_raw && /opening|abertura/i.test(lbl))
+          fields.opening_value_raw = value;
+        if (!fields.minimum_value_raw && /minimum|m[íi]nimo/i.test(lbl))
+          fields.minimum_value_raw = value;
+        if (!fields.current_bid_raw   && /current bid|licita\S+\s+atual|valor atual|melhor licita/i.test(lbl))
+          fields.current_bid_raw = value;
+        if (!fields.end_raw           && /^end:?$|^fim:?$|^termina:?$/i.test(lbl))
+          fields.end_raw = value;
       });
 
-      // ===== PASS 3: regex fallback =====
-      const text = document.body.innerText || '';
-      function pickLabel(labels) {
-        for (const label of labels) {
-          const re = new RegExp(
-            `${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:\\-]\\s*([^\\n\\r]+)`,
-            'i',
-          );
-          const m = text.match(re);
-          if (m) return m[1].trim();
-        }
-        return null;
-      }
+      dbg.push(`After walk: base=${!!fields.base_value_raw} opening=${!!fields.opening_value_raw} min=${!!fields.minimum_value_raw} bid=${!!fields.current_bid_raw} end=${!!fields.end_raw}`);
 
-      // ===== Ended state detection =====
+      // ===== Ended state =====
+      const text = document.body.innerText || '';
       const hasEnded = /auction\s+(has\s+)?ended|leil[ãa]o\s+terminou|this\s+online\s+auction\s+ended/i.test(text);
 
       return {
         title:             document.title || null,
-        base_value_raw:    fields.base_value_raw    || pickLabel(aliases.base_value),
-        opening_value_raw: fields.opening_value_raw || pickLabel(aliases.opening_value),
-        minimum_value_raw: fields.minimum_value_raw || pickLabel(aliases.minimum_value),
-        current_bid_raw:   fields.current_bid_raw   || pickLabel(aliases.current_bid),
-        end_raw:           fields.end_raw           || pickLabel(aliases.end_label),
+        base_value_raw:    fields.base_value_raw    || null,
+        opening_value_raw: fields.opening_value_raw || null,
+        minimum_value_raw: fields.minimum_value_raw || null,
+        current_bid_raw:   fields.current_bid_raw   || null,
+        end_raw:           fields.end_raw           || null,
         has_ended:         hasEnded,
         url: location.href,
+        _debug: dbg,
       };
     }, LABEL_ALIASES);
+
+    // Surface debug to Railway logs
+    if (data._debug) {
+      console.log('[scraper DEBUG] ' + url);
+      data._debug.forEach(line => console.log('  ' + line));
+    }
 
     const parsed = {
       title:         data.title,
