@@ -1,1 +1,8 @@
-auction-tracker.zip
+node_modules
+.next
+dist
+*.log
+backend/data
+.DS_Store
+.env
+.env.local
